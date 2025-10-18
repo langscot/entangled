@@ -48,9 +48,11 @@ async fn main() {
             lock.insert(client_id, client_session);
         }
 
-        tokio::spawn(handle_client(client_id, socket, rx, clients.clone()))
-            .await
-            .unwrap()
+        let client_arc = clients.clone();
+
+        tokio::spawn(async move {
+            handle_client(client_id, socket, rx, client_arc).await;
+        });
     }
 }
 
@@ -59,7 +61,7 @@ async fn handle_client(
     client_id: Uuid,
     mut socket: TcpStream,
     mut rx: mpsc::UnboundedReceiver<Message>,
-    mut clients: Arc<Mutex<HashMap<Uuid, ClientSession>>>,
+    clients: Arc<Mutex<HashMap<Uuid, ClientSession>>>,
 ) {
     let mut buffer = BytesMut::with_capacity(4096);
 
@@ -84,6 +86,10 @@ async fn handle_client(
                     Ok(_) => {
                         while let Some((frame, consumed)) = MessageFrame::parse(&buffer) {
                             eprintln!("Recieved frame: {:?}", frame.payload);
+                            let clients_arc = clients.clone();
+                            tokio::spawn(async move {
+                                handle_frame(client_id, frame, clients_arc).await;
+                            });
                             buffer.advance(consumed);
                         }
                     },
@@ -98,4 +104,23 @@ async fn handle_client(
     }
 
     clients.lock().await.remove(&client_id);
+}
+
+async fn handle_frame(
+    client_id: Uuid,
+    frame: MessageFrame,
+    clients: Arc<Mutex<HashMap<Uuid, ClientSession>>>,
+) {
+    match frame.payload {
+        Message::Ping => {
+            let _ = clients
+                .lock()
+                .await
+                .get(&client_id)
+                .unwrap()
+                .tx
+                .send(Message::Pong);
+        }
+        _ => {}
+    }
 }
